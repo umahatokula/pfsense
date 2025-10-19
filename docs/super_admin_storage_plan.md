@@ -48,7 +48,7 @@ Example `metadata.json` (version `1`)
      - Applies updates passed via stdin or file.
      - Regenerates checksum.
      - Restores `schg` and remounts `/conf` read-only.
-   - Ensures GUI/CLI code uses the same safe path for updates.
+   - Ensures GUI/CLI code uses the same safe path for updates and logs every remount in syslog.
 
 3. **`/usr/local/sbin/recovery_admin_check`**
    - Scheduled task to verify metadata checksums, permissions, and alert on anomalies.

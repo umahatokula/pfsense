@@ -25,6 +25,7 @@ set -eu
 
 CHFLAGS=/bin/chflags
 INSTALL=/usr/bin/install
+LOGGER=/usr/bin/logger
 MOUNT=/sbin/mount
 RM=/bin/rm
 SHA256=/sbin/sha256
@@ -116,11 +117,16 @@ apply_immutable() {
 	done
 }
 
+log_event() {
+	${LOGGER} -t recovery_admin_update "$*"
+}
+
 remount_ro() {
 	${MOUNT} -u -o ro "${CONF_PATH}" >/dev/null 2>&1 || true
 }
 
 remount_rw() {
+	log_event "remounting ${CONF_PATH} read-write for recovery admin update"
 	${MOUNT} -u -o rw "${CONF_PATH}"
 }
 
@@ -155,6 +161,7 @@ restore_state() {
 		"${RECOVERY_DIR}/version" \
 		"${RECOVERY_DIR}/checksums.sha256"
 	remount_ro
+	log_event "reapplied immutable flags and remounted ${CONF_PATH} read-only"
 	cleanup_temp_files
 }
 

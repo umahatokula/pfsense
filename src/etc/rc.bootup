@@ -73,6 +73,14 @@ echo ".";
 /* Setup notice queues */
 notices_setup();
 
+/* Prepare recovery admin storage */
+if (file_exists("/etc/rc.recovery_admin_mount")) {
+	mwexec("/etc/rc.recovery_admin_mount start");
+}
+if (file_exists("/usr/local/sbin/system_integrity_check")) {
+	mwexec("/usr/local/sbin/system_integrity_check --check");
+}
+
 /* get system memory amount */
 $memory = get_memory();
 $physmem = $memory[0];

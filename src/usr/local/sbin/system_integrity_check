@@ -1,0 +1,166 @@
+#!/bin/sh
+#
+# system_integrity_check
+#
+# part of pfSense (https://www.pfsense.org)
+# Copyright (c) 2025
+# All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+set -eu
+
+: ${CONF_PATH:=/conf}
+: ${RECOVERY_DIR:=${CONF_PATH}/recovery_admin}
+: ${INTEGRITY_FILE:=${RECOVERY_DIR}/core_files.sha256}
+: ${TMPDIR:=/tmp}
+
+CHFLAGS=/bin/chflags
+INSTALL=/usr/bin/install
+LOGGER=/usr/bin/logger
+MOUNT=/sbin/mount
+RM=/bin/rm
+SHA256=/sbin/sha256
+MKTEMP=/usr/bin/mktemp
+
+FILES="
+/etc/inc/auth.inc
+/etc/inc/priv.inc
+/etc/inc/recovery_admin.inc
+/etc/rc.bootup
+/etc/rc.recovery_admin_mount
+/usr/local/sbin/recovery_admin_update
+/usr/local/sbin/recovery_admin_check
+/usr/local/sbin/system_integrity_check
+/usr/local/www/system_recovery_admin.php
+"
+
+log_warn() {
+	${LOGGER} -t system_integrity_check "$*"
+}
+
+usage() {
+	cat <<'EOF'
+usage: system_integrity_check [--init|--check]
+
+  --init   Generate baseline checksums for critical recovery-admin files.
+  --check  Verify current files against the stored baseline (default).
+EOF
+}
+
+remount_rw() {
+	${MOUNT} -u -o rw "${CONF_PATH}" >/dev/null 2>&1 || true
+}
+
+remount_ro() {
+	${MOUNT} -u -o ro "${CONF_PATH}" >/dev/null 2>&1 || true
+}
+
+remove_immutable() {
+	for _path in "$@"; do
+		[ -e "${_path}" ] || continue
+		${CHFLAGS} noschg "${_path}" >/dev/null 2>&1 || true
+	done
+}
+
+apply_immutable() {
+	for _path in "$@"; do
+		[ -e "${_path}" ] || continue
+		${CHFLAGS} schg "${_path}" >/dev/null 2>&1 || true
+	done
+}
+
+compute_hashes() {
+	for _file in ${FILES}; do
+		if [ ! -f "${_file}" ]; then
+			echo "MISSING ${_file}"
+			continue
+		fi
+		${SHA256} -r "${_file}"
+	done
+}
+
+init_baseline() {
+	if [ ! -d "${RECOVERY_DIR}" ]; then
+		log_warn "recovery admin directory missing; cannot initialise integrity baseline"
+		return 1
+	fi
+
+	tmpfile="$(${MKTEMP} -t integrity_baseline)"
+	trap "{ ${RM} -f '${tmpfile}'; }" EXIT INT TERM
+
+	compute_hashes > "${tmpfile}"
+
+	remount_rw
+	remove_immutable "${INTEGRITY_FILE}"
+	${INSTALL} -m 600 -o root -g wheel "${tmpfile}" "${INTEGRITY_FILE}"
+	apply_immutable "${INTEGRITY_FILE}"
+	remount_ro
+	${RM} -f "${tmpfile}"
+	trap - EXIT INT TERM
+	log_warn "system integrity baseline written to ${INTEGRITY_FILE}"
+	return 0
+}
+
+check_baseline() {
+	if [ ! -f "${INTEGRITY_FILE}" ]; then
+		log_warn "integrity baseline missing at ${INTEGRITY_FILE}; run system_integrity_check --init"
+		return 1
+	fi
+
+	tmpfile="$(${MKTEMP} -t integrity_check)"
+	trap "{ ${RM} -f '${tmpfile}'; }" EXIT INT TERM
+
+	compute_hashes > "${tmpfile}"
+
+	if ! diff -q "${tmpfile}" "${INTEGRITY_FILE}" >/dev/null 2>&1; then
+		log_warn "CRITICAL: core recovery-admin files do not match baseline"
+		diff -u "${INTEGRITY_FILE}" "${tmpfile}" 2>/dev/null | ${LOGGER} -t system_integrity_check
+		${RM} -f "${tmpfile}"
+		trap - EXIT INT TERM
+		return 2
+	fi
+
+	${RM} -f "${tmpfile}"
+	trap - EXIT INT TERM
+	return 0
+}
+
+mode="--check"
+if [ $# -gt 0 ]; then
+	case "$1" in
+	--init|--check)
+		mode="$1"
+		shift
+		;;
+	-h|--help)
+		usage
+		exit 0
+		;;
+	*)
+		usage >&2
+		exit 64
+		;;
+	esac
+fi
+
+case "${mode}" in
+--init)
+	init_baseline
+	;;
+--check)
+	check_baseline
+	;;
+esac
+
+exit $?

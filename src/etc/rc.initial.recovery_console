@@ -1,0 +1,71 @@
+#!/usr/local/bin/php-cgi -f
+<?php
+require_once('config.inc');
+require_once('auth.inc');
+require_once('functions.inc');
+require_once('shaper.inc');
+require_once('recovery_admin.inc');
+
+$stdin = fopen('php://stdin', 'r');
+
+$metadata = recovery_admin_get_metadata();
+$default_username = $metadata['username'] ?? '';
+
+echo "\n";
+echo gettext('Recovery admin verification required.') . "\n";
+echo gettext('Username') . " [{$default_username}]: ";
+$username = trim(fgets($stdin));
+if ($username === '' && $default_username !== '') {
+	$username = $default_username;
+}
+
+if ($username === '') {
+	echo gettext('No username provided; aborting.') . "\n";
+	exit(1);
+}
+
+echo gettext('Password / Token: ');
+$password = trim(fgets($stdin));
+
+$attributes = array('nas_identifier' => 'console-recovery');
+if (!recovery_admin_authenticate($username, $password, $attributes)) {
+	$error = recovery_admin_last_error();
+	echo "\n" . ($error ?: gettext('Authentication failed.')) . "\n";
+	exit(1);
+}
+
+echo "\n";
+echo gettext('Authentication successful. Resetting administrator credentials...') . "\n";
+
+config_set_path('system/webgui/authmode', 'Local Database');
+
+$user_entry = getUserEntryByUID(0);
+$admin_user = &$user_entry['item'];
+if (!$admin_user) {
+	$admin_user = ['uid' => 0];
+	config_set_path('system/user/', $admin_user);
+	$user_entry = getUserEntryByUID(0);
+	$admin_user = &$user_entry['item'];
+}
+
+$admin_user['name'] = 'admin';
+$admin_user['scope'] = 'system';
+$admin_user['priv'] = ['user-shell-access'];
+unset($admin_user['disabled']);
+unset($admin_user['expires']);
+
+if (isset($user_entry['idx'])) {
+	config_set_path("system/user/{$user_entry['idx']}", $admin_user);
+}
+
+$new_password = bin2hex(random_bytes(8));
+local_user_set_password($user_entry, $new_password);
+local_user_set($admin_user);
+write_config(gettext('Reset admin account via recovery console'));
+
+echo "\n";
+echo sprintf(gettext('Admin password reset complete. New password: %s'), $new_password) . "\n";
+echo gettext('Log in immediately and change it from the GUI.') . "\n";
+
+fclose($stdin);
+?>

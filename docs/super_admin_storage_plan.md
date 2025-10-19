@@ -62,6 +62,10 @@ Example `metadata.json` (version `1`)
    - Checks whether `/conf` remains read-only.
    - `--enforce` remounts read-only and logs any unexpected writable state.
 
+6. **`/etc/rc.initial.recovery_console`**
+   - Console workflow (menu option 17) that authenticates the recovery admin via the external backend.
+   - Resets the GUI administrator account to local authentication with a fresh random password.
+
 ## Integration Points
 - GUI/API flows call `recovery_admin_update` through sudoers rule instead of writing files directly.
 - Dedicated management UI at `System > User Management > Recovery Admin` exposes metadata editing via the helper.

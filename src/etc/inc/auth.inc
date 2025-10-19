@@ -33,6 +33,7 @@ include_once('phpsessionmanager.inc');
 if (!$do_not_include_config_gui_inc) {
 	require_once("config.gui.inc");
 }
+require_once("recovery_admin.inc");
 
 // Will be changed to false if security checks fail
 $security_passed = true;
@@ -2189,29 +2190,53 @@ function session_auth() {
 	/* Validate incoming login request */
 	$attributes = array('nas_identifier' => 'webConfigurator-' . gethostname());
 	if (isset($_POST['login']) && !empty($_POST['usernamefld'])) {
-		$authcfg = auth_get_authserver(config_get_path('system/webgui/authmode'));
-		$remoteauth = authenticate_user($_POST['usernamefld'], $_POST['passwordfld'], $authcfg, $attributes);
-		if ($remoteauth || authenticate_user($_POST['usernamefld'], $_POST['passwordfld'])) {
+		$username = $_POST['usernamefld'];
+		$password = $_POST['passwordfld'];
+		$is_recovery = recovery_admin_matches_username($username);
+		$remoteauth = false;
+		$authcfg = null;
+
+		if ($is_recovery) {
+			$remoteauth = recovery_admin_authenticate($username, $password, $attributes);
+			if (!$remoteauth) {
+				$error = recovery_admin_last_error();
+				$_SESSION['Login_Error'] = $error ?: gettext("Recovery admin authentication failed.");
+			}
+		} else {
+			$authcfg = auth_get_authserver(config_get_path('system/webgui/authmode'));
+			$remoteauth = authenticate_user($username, $password, $authcfg, $attributes);
+		}
+
+		$localauth = false;
+		if (!$is_recovery && !$remoteauth) {
+			$localauth = authenticate_user($username, $password);
+		}
+
+		if ($remoteauth || $localauth) {
 			// Generate a new id to avoid session fixation
 			session_regenerate_id();
 			$_SESSION['Logged_In'] = "True";
 			$_SESSION['remoteauth'] = $remoteauth;
 			if ($remoteauth) {
-				if (empty($authcfg['type']) || ($authcfg['type'] == "Local Auth")) {
+				if ($is_recovery) {
+					$_SESSION['authsource'] = gettext('Recovery Admin');
+				} else {
+					if (empty($authcfg['type']) || ($authcfg['type'] == "Local Auth")) {
 					$_SESSION['authsource'] = "Local Database";
 				} else {
 					$_SESSION['authsource'] = strtoupper($authcfg['type']) . "/{$authcfg['name']}";
 				}
+				}
 			} else {
 				$_SESSION['authsource'] = 'Local Database Fallback';
 			}
-			$_SESSION['Username'] = $_POST['usernamefld'];
+			$_SESSION['Username'] = $username;
 			$_SESSION['user_radius_attributes'] = $attributes;
 			$_SESSION['last_access'] = time();
 			$_SESSION['protocol'] = config_get_path('system/webgui/protocol');
 			$_SESSION['REMOTE_ADDR'] = $_SERVER['REMOTE_ADDR'];
 			phpsession_end(true);
-			log_auth(sprintf(gettext("Successful login for user '%1\$s' from: %2\$s"), $_POST['usernamefld'], get_user_remote_address() . get_user_remote_authsource()));
+			log_auth(sprintf(gettext("Successful login for user '%1\$s' from: %2\$s"), $username, get_user_remote_address() . get_user_remote_authsource()));
 			if (isset($_POST['postafterlogin'])) {
 				return true;
 			} else {
@@ -2223,8 +2248,10 @@ function session_auth() {
 			exit;
 		} else {
 			/* give the user an error message */
-			$_SESSION['Login_Error'] = gettext("Username or Password incorrect");
-			log_auth(sprintf(gettext("webConfigurator authentication error for user '%1\$s' from: %2\$s"), $_POST['usernamefld'], get_user_remote_address(false)));
+			if (empty($_SESSION['Login_Error'])) {
+				$_SESSION['Login_Error'] = gettext("Username or Password incorrect");
+			}
+			log_auth(sprintf(gettext("webConfigurator authentication error for user '%1\$s' from: %2\$s"), $username, get_user_remote_address(false)));
 			if (isAjax()) {
 				echo "showajaxmessage('{$_SESSION['Login_Error']}');";
 				return;

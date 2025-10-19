@@ -1,0 +1,192 @@
+#!/bin/sh
+#
+# recovery_admin_update
+#
+# part of pfSense (https://www.pfsense.org)
+# Copyright (c) 2025
+# All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+set -eu
+
+: ${CONF_PATH:=/conf}
+: ${RECOVERY_DIR:=${CONF_PATH}/recovery_admin}
+
+CHFLAGS=/bin/chflags
+INSTALL=/usr/bin/install
+MOUNT=/sbin/mount
+RM=/bin/rm
+SHA256=/sbin/sha256
+
+usage() {
+	cat <<'EOF'
+usage: recovery_admin_update --metadata <file> [options]
+
+Options:
+  --metadata <file>       Source JSON file with recovery account metadata.
+  --credentials <file>    Optional secret blob to store as credentials.hash.
+  --version <value>       Optional schema version string (default: preserve or 1).
+  --stdin                 Read metadata JSON from STDIN.
+  -h, --help              Show this help text.
+EOF
+}
+
+metadata_src=""
+credentials_src=""
+version_value=""
+use_stdin=0
+tmp_metadata=""
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--metadata)
+		[ $# -ge 2 ] || { echo "error: --metadata requires a value" >&2; usage; exit 64; }
+		metadata_src="$2"
+		shift 2
+		;;
+	--credentials)
+		[ $# -ge 2 ] || { echo "error: --credentials requires a value" >&2; usage; exit 64; }
+		credentials_src="$2"
+		shift 2
+		;;
+	--version)
+		[ $# -ge 2 ] || { echo "error: --version requires a value" >&2; usage; exit 64; }
+		version_value="$2"
+		shift 2
+		;;
+	--stdin)
+		use_stdin=1
+		shift
+		;;
+	-h|--help)
+		usage
+		exit 0
+		;;
+	*)
+		echo "error: unknown option: $1" >&2
+		usage
+		exit 64
+		;;
+	esac
+done
+
+if [ "${use_stdin}" -eq 1 ]; then
+	tmp_metadata="$(/usr/bin/mktemp -t recovery_metadata)"
+	cat > "${tmp_metadata}"
+	metadata_src="${tmp_metadata}"
+fi
+
+[ -n "${metadata_src}" ] || { echo "error: metadata source required" >&2; usage; exit 64; }
+[ -f "${metadata_src}" ] || { echo "error: metadata source not found: ${metadata_src}" >&2; exit 66; }
+
+if [ -n "${credentials_src}" ] && [ ! -f "${credentials_src}" ]; then
+	echo "error: credentials source not found: ${credentials_src}" >&2
+	exit 66
+fi
+
+ensure_directory() {
+	if [ ! -d "${RECOVERY_DIR}" ]; then
+		${MOUNT} -u -o rw "${CONF_PATH}"
+		${INSTALL} -d -m 700 -o root -g wheel "${RECOVERY_DIR}"
+	fi
+}
+
+remove_immutable() {
+	for _path in "$@"; do
+		[ -e "${_path}" ] || continue
+		${CHFLAGS} noschg "${_path}" >/dev/null 2>&1 || true
+	done
+}
+
+apply_immutable() {
+	for _path in "$@"; do
+		[ -e "${_path}" ] || continue
+		${CHFLAGS} schg "${_path}" >/dev/null 2>&1 || true
+	done
+}
+
+remount_ro() {
+	${MOUNT} -u -o ro "${CONF_PATH}" >/dev/null 2>&1 || true
+}
+
+remount_rw() {
+	${MOUNT} -u -o rw "${CONF_PATH}"
+}
+
+cleanup_temp_files() {
+	[ -n "${tmp_metadata}" ] && ${RM} -f "${tmp_metadata}"
+	tmp_metadata=""
+}
+
+generate_checksums() {
+	_checksum_tmp="$(/usr/bin/mktemp -t recovery_checksum)"
+	local _files=""
+	for _file in metadata.json credentials.hash version; do
+		if [ -f "${RECOVERY_DIR}/${_file}" ]; then
+			_files="${_files} ${_file}"
+		fi
+	done
+	if [ -n "${_files}" ]; then
+		(
+			cd "${RECOVERY_DIR}"
+			${SHA256} -r ${_files}
+		) > "${_checksum_tmp}"
+		${INSTALL} -m 600 -o root -g wheel "${_checksum_tmp}" "${RECOVERY_DIR}/checksums.sha256"
+	fi
+	${RM} -f "${_checksum_tmp}"
+}
+
+restore_state() {
+	generate_checksums
+	apply_immutable "${RECOVERY_DIR}" \
+		"${RECOVERY_DIR}/metadata.json" \
+		"${RECOVERY_DIR}/credentials.hash" \
+		"${RECOVERY_DIR}/version" \
+		"${RECOVERY_DIR}/checksums.sha256"
+	remount_ro
+	cleanup_temp_files
+}
+
+trap restore_state EXIT INT TERM
+
+remount_rw
+ensure_directory
+remove_immutable "${RECOVERY_DIR}" \
+	"${RECOVERY_DIR}/metadata.json" \
+	"${RECOVERY_DIR}/credentials.hash" \
+	"${RECOVERY_DIR}/version" \
+	"${RECOVERY_DIR}/checksums.sha256"
+
+${INSTALL} -m 600 -o root -g wheel "${metadata_src}" "${RECOVERY_DIR}/metadata.json"
+
+if [ -n "${credentials_src}" ]; then
+	${INSTALL} -m 600 -o root -g wheel "${credentials_src}" "${RECOVERY_DIR}/credentials.hash"
+elif [ -f "${RECOVERY_DIR}/credentials.hash" ]; then
+	${RM} -f "${RECOVERY_DIR}/credentials.hash"
+fi
+
+if [ -n "${version_value}" ]; then
+	printf '%s\n' "${version_value}" > "${RECOVERY_DIR}/version.tmp"
+	${INSTALL} -m 600 -o root -g wheel "${RECOVERY_DIR}/version.tmp" "${RECOVERY_DIR}/version"
+	${RM} -f "${RECOVERY_DIR}/version.tmp"
+elif [ ! -f "${RECOVERY_DIR}/version" ]; then
+	printf '%s\n' "1" > "${RECOVERY_DIR}/version.tmp"
+	${INSTALL} -m 600 -o root -g wheel "${RECOVERY_DIR}/version.tmp" "${RECOVERY_DIR}/version"
+	${RM} -f "${RECOVERY_DIR}/version.tmp"
+fi
+
+trap - EXIT INT TERM
+restore_state
+
+exit 0

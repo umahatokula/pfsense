@@ -1,0 +1,81 @@
+#!/bin/sh
+#
+# recovery_admin_check
+#
+# part of pfSense (https://www.pfsense.org)
+# Copyright (c) 2025
+# All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+set -eu
+
+: ${CONF_PATH:=/conf}
+: ${RECOVERY_DIR:=${CONF_PATH}/recovery_admin}
+: ${CHECKSUM_FILE:=${RECOVERY_DIR}/checksums.sha256}
+
+CHFLAGS=/bin/chflags
+LOGGER=/usr/bin/logger
+MOUNT=/sbin/mount
+RM=/bin/rm
+SHA256=/sbin/sha256
+
+warn() {
+	${LOGGER} -t recovery_admin_check "$1"
+}
+
+if [ ! -d "${RECOVERY_DIR}" ]; then
+	# Nothing to validate yet.
+	exit 0
+fi
+
+if [ ! -f "${CHECKSUM_FILE}" ]; then
+	warn "checksum file missing for recovery admin metadata"
+	exit 1
+fi
+
+tmp_sum="$(/usr/bin/mktemp -t recovery_check)"
+trap "{ ${RM} -f '${tmp_sum}'; }" EXIT INT TERM
+
+# Temporarily drop immutable flag to read files, but do not modify state.
+${CHFLAGS} noschg "${RECOVERY_DIR}" >/dev/null 2>&1 || true
+
+files=""
+for f in metadata.json credentials.hash version; do
+	if [ -f "${RECOVERY_DIR}/${f}" ]; then
+		files="${files} ${f}"
+	fi
+done
+
+if [ -z "${files}" ]; then
+	warn "recovery admin directory exists but contains no tracked files"
+	exit 1
+fi
+
+(
+	cd "${RECOVERY_DIR}"
+	${SHA256} -r ${files}
+) > "${tmp_sum}"
+
+diff -q "${tmp_sum}" "${CHECKSUM_FILE}" >/dev/null 2>&1
+status=$?
+
+# Reapply immutable bit regardless of diff result.
+${CHFLAGS} schg "${RECOVERY_DIR}" >/dev/null 2>&1 || true
+
+if [ ${status} -ne 0 ]; then
+	warn "checksum mismatch detected for recovery admin metadata"
+	exit 2
+fi
+
+exit 0

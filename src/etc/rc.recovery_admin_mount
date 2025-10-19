@@ -1,0 +1,96 @@
+#!/bin/sh
+#
+# rc.recovery_admin_mount
+#
+# part of pfSense (https://www.pfsense.org)
+# Copyright (c) 2025
+# All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+set -eu
+
+: ${CONF_PATH:=/conf}
+: ${RECOVERY_DIR:=${CONF_PATH}/recovery_admin}
+
+CHFLAGS=/bin/chflags
+INSTALL=/usr/bin/install
+MOUNT=/sbin/mount
+RM=/bin/rm
+PRINTF=/usr/bin/printf
+
+remove_immutable() {
+	for _path in "$@"; do
+		[ -e "${_path}" ] || continue
+		${CHFLAGS} noschg "${_path}" >/dev/null 2>&1 || true
+	done
+}
+
+apply_immutable() {
+	for _path in "$@"; do
+		[ -e "${_path}" ] || continue
+		${CHFLAGS} schg "${_path}" >/dev/null 2>&1 || true
+	done
+}
+
+ensure_directory() {
+	if [ ! -d "${RECOVERY_DIR}" ]; then
+		${MOUNT} -u -o rw "${CONF_PATH}" >/dev/null 2>&1 || true
+		remove_immutable "${CONF_PATH}" "${RECOVERY_DIR}"
+		${INSTALL} -d -m 700 -o root -g wheel "${RECOVERY_DIR}"
+	fi
+}
+
+ensure_version_file() {
+	local _version_file="${RECOVERY_DIR}/version"
+
+	if [ ! -e "${_version_file}" ]; then
+		${MOUNT} -u -o rw "${CONF_PATH}" >/dev/null 2>&1 || true
+		remove_immutable "${RECOVERY_DIR}" "${_version_file}"
+		${PRINTF} '%s\n' "1" > "${_version_file}.tmp"
+		${INSTALL} -m 600 -o root -g wheel "${_version_file}.tmp" "${_version_file}"
+		${RM} -f "${_version_file}.tmp"
+	fi
+}
+
+restore_filesystem_state() {
+	apply_immutable "${RECOVERY_DIR}" \
+		"${RECOVERY_DIR}/metadata.json" \
+		"${RECOVERY_DIR}/credentials.hash" \
+		"${RECOVERY_DIR}/version" \
+		"${RECOVERY_DIR}/checksums.sha256" \
+		"${RECOVERY_DIR}/core_files.sha256"
+	${MOUNT} -u -o ro "${CONF_PATH}" >/dev/null 2>&1 || true
+}
+
+main() {
+	trap restore_filesystem_state EXIT INT TERM
+	ensure_directory
+	ensure_version_file
+	restore_filesystem_state
+}
+
+case "${1:-start}" in
+start)
+	main
+	;;
+stop)
+	exit 0
+	;;
+*)
+	echo "usage: $(basename "$0") {start|stop}" >&2
+	exit 64
+	;;
+esac
+
+exit 0

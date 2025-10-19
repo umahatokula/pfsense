@@ -34,6 +34,9 @@ function periodic_daily() {
 	if (file_exists('/usr/local/sbin/system_integrity_check')) {
 		mwexec('/usr/local/sbin/system_integrity_check --check');
 	}
+	if (file_exists('/usr/local/sbin/conf_mount_guard')) {
+		mwexec('/usr/local/sbin/conf_mount_guard --enforce');
+	}
 
 	/* Allow packages to define and execute daily tasks */
 	pkg_call_plugins('plugin_periodic', array('event' => 'daily'));

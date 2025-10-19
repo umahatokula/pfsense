@@ -1,0 +1,88 @@
+#!/bin/sh
+#
+# conf_mount_guard
+#
+# part of pfSense (https://www.pfsense.org)
+# Copyright (c) 2025
+# All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+set -eu
+
+CONF_PATH=${CONF_PATH:-/conf}
+LOGGER=/usr/bin/logger
+MOUNT=/sbin/mount
+
+log_warn() {
+	${LOGGER} -t conf_mount_guard "$*"
+}
+
+usage() {
+	cat <<'EOF'
+usage: conf_mount_guard [--check|--enforce]
+
+  --check     Verify that /conf is mounted read-only (default)
+  --enforce   Remount /conf read-only if it is currently writable
+EOF
+}
+
+is_conf_ro() {
+	${MOUNT} -p | awk -v target="${CONF_PATH}" '$2 == target {print $4}' | grep -qw ro
+}
+
+enforce_ro() {
+	if is_conf_ro; then
+		return 0
+	fi
+	log_warn "detected ${CONF_PATH} mounted read-write; forcing read-only remount"
+	if ${MOUNT} -u -o ro "${CONF_PATH}" 2>/dev/null; then
+		log_warn "${CONF_PATH} successfully remounted read-only"
+		return 0
+	fi
+	log_warn "failed to remount ${CONF_PATH} read-only"
+	return 1
+}
+
+mode="check"
+
+if [ $# -gt 0 ]; then
+	case "$1" in
+	--check|--enforce)
+		mode="${1#--}"
+		shift
+		;;
+	-h|--help)
+		usage
+		exit 0
+		;;
+	*)
+		usage >&2
+		exit 64
+		;;
+	esac
+fi
+
+case "${mode}" in
+	check)
+		if ! is_conf_ro; then
+			log_warn "${CONF_PATH} is currently mounted read-write"
+			exit 1
+		fi
+		;;
+	enforce)
+		enforce_ro || exit 1
+		;;
+esac
+
+exit 0

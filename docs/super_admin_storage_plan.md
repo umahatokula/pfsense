@@ -56,7 +56,8 @@ Example `metadata.json` (version `1`)
 
 4. **`/usr/local/sbin/system_integrity_check`**
    - Generates and verifies SHA-256 baselines for core authentication/recovery files.
-   - `--init` rewrites `/conf/recovery_admin/core_files.sha256`; boot runs `--check` and logs differences.
+- `--init` rewrites `/conf/recovery_admin/core_files.sha256`; boot runs `--check` and logs differences.
+ - `--init` rewrites `/conf/recovery_admin/core_files.sha256`; boot and daily periodic jobs run `--check` and log differences.
 
 ## Integration Points
 - GUI/API flows call `recovery_admin_update` through sudoers rule instead of writing files directly.

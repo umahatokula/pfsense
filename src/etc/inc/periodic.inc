@@ -30,6 +30,11 @@ function periodic_daily() {
 	require_once("certs.inc");
 	cert_notify_expiring();
 
+	/* Verify recovery admin integrity baseline */
+	if (file_exists('/usr/local/sbin/system_integrity_check')) {
+		mwexec('/usr/local/sbin/system_integrity_check --check');
+	}
+
 	/* Allow packages to define and execute daily tasks */
 	pkg_call_plugins('plugin_periodic', array('event' => 'daily'));
 
